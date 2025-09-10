@@ -105,8 +105,9 @@
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
     @media (prefers-reduced-motion: reduce) {
-      * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
-      /* 단, 아래 강제 허용 스위치가 없을 때만 초침을 멈춘다 */
+      /* reduced-motion일 때 전체 애니메이션/트랜지션 축소
+         → 단, force-motion이 켜진 동안에는 그대로 유지(게임 시계/페이드 정상 동작) */
+      :root:not(.force-motion) * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
       :root:not(.force-motion) .clock-hand-second { animation: none !important; }
     }
 
