@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>10초 맞추기 게임</title>
+  <style>
+    /*
+      10초 맞추기 게임 — 단일 HTML 파일
+      설계 의도:
+      - 모바일 우선, 중앙 정렬 카드형 UI
+      - 고정밀 타이머(performance.now)와 requestAnimationFrame 기반 표시 분리
+      - 5.00초에 페이드 시작 → 2초 전환 → 7.00초에 완전 투명
+      - 접근성: 라이브 리전, 키보드 조작, 포커스 링, 고대비 색상
+      - 애니메이션 과민 사용자 배려: prefers-reduced-motion 대응
+    */
+
+    :root {
+      /* 쉽게 조정 가능한 주요 상수(CSS 레벨) */
+      --bg: #0b1020;             /* 어두운 남색 배경 (명암 대비 확보) */
+      --card: #ffffff;           /* 카드 배경 */
+      --text: #0b1020;           /* 기본 텍스트 색 */
+      --muted: #5b647a;          /* 보조 텍스트 */
+      --primary: #1b5cff;        /* 주요 색 (버튼) */
+      --primary-press: #0c46d4;  /* 버튼 누름 */
+      --primary-disabled: #aab8ff;
+      --success: #1a8f3d;
+      --warning: #b96d00;
+      --danger: #c62828;
+
+      --radius: 16px;
+      --shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+      --focus: 0 0 0 3px rgba(27, 92, 255, 0.35);
+
+      --content-max: 720px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans KR, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .wrap {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, calc(env(safe-area-inset-bottom) + 16px)) max(16px, env(safe-area-inset-left));
+    }
+
+    .card {
+      width: min(100%, var(--content-max));
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: clamp(16px, 5vw, 28px);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: clamp(12px, 3vw, 20px);
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .title {
+      font-weight: 700;
+      font-size: clamp(18px, 4.5vw, 24px);
+      line-height: 1.2;
+    }
+    .desc {
+      color: var(--muted);
+      font-size: clamp(13px, 3.5vw, 15px);
+    }
+
+        .status-row {
+      display: flex;
+      flex-direction: column; /* 시계 위, 초시계 아래 배치 */
+      align-items: center;
+      justify-content: center;
+      gap: clamp(8px, 2.5vw, 14px);
+      text-align: center;
+    }
+
+            .clock {
+      width: clamp(96px, 40vw, 200px); /* 더 크게 */
+      height: clamp(96px, 40vw, 200px);
+      flex: 0 0 auto;
+    }
+
+        .timer {
+      /* 디지털 숫자 스타일: 자릿수 폭 안정화를 위해 tabular-nums */
+      font-variant-numeric: tabular-nums lining-nums;
+      font-feature-settings: "tnum" 1, "lnum" 1;
+      font-size: clamp(40px, 16vw, 96px);
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1;
+      user-select: none;
+      transition: opacity 2s linear; /* fade-out 전환 시간(2초) */
+      text-align: center; /* 숫자 중앙 정렬 */
+    }
+
+    .timer.fade {
+      opacity: 0; /* 5.00초에서 클래스 부여 → 2초 후(7.00초) 완전 투명 */
+    }
+
+    .countdown {
+      min-height: 28px;
+      font-size: clamp(18px, 6vw, 28px);
+      font-weight: 700;
+      color: var(--warning);
+      text-align: center;
+      height: 1lh;
+    }
+
+    .result {
+      color: var(--text);
+      background: #f5f7ff;
+      border: 1px solid #dde5ff;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: clamp(14px, 3.8vw, 16px);
+      display: none; /* 종료 전 숨김 */
+    }
+
+    .result strong { font-weight: 800; }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 16px;
+      min-height: 56px; /* 터치 타깃 ≥ 44px */
+      font-weight: 700;
+      font-size: clamp(15px, 4vw, 17px);
+      cursor: pointer;
+      box-shadow: 0 2px 0 rgba(0,0,0,0.05);
+      transition: transform 0.08s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
+    }
+    button:focus-visible {
+      outline: none;
+      box-shadow: var(--focus);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    .btn-primary:active { transform: translateY(1px); background: var(--primary-press); }
+    .btn-primary[disabled], .btn-primary[aria-disabled="true"] {
+      background: var(--primary-disabled);
+      color: #eef1ff;
+      cursor: not-allowed;
+      filter: grayscale(10%);
+    }
+
+    .btn-secondary {
+      background: #e8ecff;
+      color: #143269;
+      border: 1px solid #cfd9ff;
+    }
+    .btn-secondary:active { transform: translateY(1px); }
+
+    .hidden { display: none !important; }
+
+    /* 비활성 클릭 시 시각적 피드백(튕김) */
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-3px); }
+      50% { transform: translateX(3px); }
+      75% { transform: translateX(-2px); }
+    }
+    .shake { animation: shake 180ms ease-in-out; }
+
+    /* 스크린 리더 전용 콘텐츠 */
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+
+    /* 과도한 애니메이션 최소화 */
+    @media (prefers-reduced-motion: reduce) {
+      * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+    }
+      /* GIF-like 초침 애니메이션(steps) */
+            .clock-hand-second {
+      transform-box: view-box;      /* 뷰박스 기준 좌표 사용 → 중심(12,12) 고정 */
+      transform-origin: center;     /* viewBox 중심 회전 */
+      animation: tick var(--sec-rot, 0.8s) linear infinite; /* 0.8초에 한 바퀴 */
+      animation-delay: var(--sec-delay, 0s); /* 시작 각도 랜덤화 */
+      animation-play-state: paused; /* 기본은 멈춤 */
+    }
+    /* running 상태에서만 애니메이션 재생 */
+    #clock.animate .clock-hand-second { animation-play-state: running; }
+    /* running 상태에서만 애니메이션 재생 */
+    #clock.animate .clock-hand-second { animation-play-state: running; }
+    @keyframes tick {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .clock-hand-second { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main class="card" role="application" aria-label="10초 맞추기 게임">
+      <div>
+        <div class="title">10초 맞추기 게임</div>
+        <p class="desc">카운트다운 후 10초에 맞춰 버튼을 눌러보세요.</p>
+      </div>
+
+      <section aria-labelledby="timer-section-heading">
+        <h2 id="timer-section-heading" class="sr-only">스톱워치</h2>
+        <div class="status-row" aria-live="off">
+          <!-- 시계 아이콘 (SVG). 장식 목적이므로 aria-hidden 처리하고 인접 텍스트로 의미 제공 -->
+          <svg id="clock" class="clock" viewBox="0 0 24 24" fill="none" role="img" aria-label="시계 아이콘(초침 애니메이션)" focusable="false">
+            <defs>
+              <filter id="clockShadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="1" stdDeviation="0.6" flood-color="#000" flood-opacity="0.15"/>
+              </filter>
+            </defs>
+            <g filter="url(#clockShadow)">
+              <circle cx="12" cy="12" r="9.2" stroke="#1b2b57" stroke-width="1.6" fill="#ffffff" />
+              <!-- 12시/3시/6시/9시 주요 눈금 -->
+              <g stroke="#1b2b57" stroke-linecap="round" opacity="0.9">
+                <line x1="12" y1="2.8" x2="12" y2="4.6" stroke-width="1.4"/>
+                <line x1="21.2" y1="12" x2="19.4" y2="12" stroke-width="1.4"/>
+                <line x1="12" y1="21.2" x2="12" y2="19.4" stroke-width="1.4"/>
+                <line x1="2.8" y1="12" x2="4.6" y2="12" stroke-width="1.4"/>
+              </g>
+              <!-- 보조 눈금 -->
+              <g stroke="#1b2b57" stroke-width="0.8" stroke-linecap="round" opacity="0.45">
+                <g transform="rotate(30 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(60 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(120 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(150 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(210 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(240 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(300 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+                <g transform="rotate(330 12 12)"><line x1="12" y1="3.6" x2="12" y2="4.8"/></g>
+              </g>
+            </g>
+            <!-- 용두 -->
+            <rect x="10.9" y="1.6" width="2.2" height="2.0" rx="0.3" fill="#1b2b57"/>
+            <!-- 초침: 0.8초당 1회전 (linear) -->
+            <g class="clock-hand-second">
+              <line x1="12" y1="12" x2="12" y2="3.6" stroke="#c62828" stroke-width="1.2" stroke-linecap="round"/>
+              <!-- 꼬리 부분 약간 -->
+              <line x1="12" y1="12" x2="12" y2="15.2" stroke="#c62828" stroke-width="0.9" stroke-linecap="round" opacity="0.8"/>
+            </g>
+            <circle cx="12" cy="12" r="1.1" fill="#1b2b57" />
+          </svg>
+          <div id="timerText" class="timer" role="timer" aria-live="off" aria-label="경과 시간 0.00초">0.00</div>
+        </div>
+        <div id="countdown" class="countdown" aria-live="assertive" aria-atomic="true"></div>
+        <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+      </section>
+
+      <section>
+        <div id="result" class="result" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="actions">
+        <button id="actionBtn" class="btn-primary" type="button" disabled aria-disabled="true" aria-describedby="actionHint">지금이다!</button>
+        <button id="resetBtn" class="btn-secondary hidden" type="button">다시하기</button>
+        <span id="actionHint" class="sr-only">스페이스 또는 엔터로도 누를 수 있습니다.</span>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    "use strict";
+    /* ========================= 설정(상수) ========================= */
+    const DEBUG = false; // 개발 시 true로 전환하면 콘솔 디버그 로그 출력
+
+    // 게임 규칙 관련 상수(요구사항에 따라 상단에 선언 → 쉽게 조정 가능)
+    const TARGET_SECONDS = 10.00;           // 목표 시간(초)
+    const COUNTDOWN_SECONDS = 3.00;         // 카운트다운 총 길이(초)
+    const FADE_START_SEC = 5.00;            // 페이드 시작 시점(초)
+    const FADE_END_SEC = 7.00;              // 페이드 종료 시점(초) = 완전 투명
+
+    // 등급 경계값(절대 오차 기준)
+    const GRADES = {
+      god: 0.05,   // ±0.05초 이내
+      great: 0.10, // ±0.10초 이내
+      good: 0.30   // ±0.30초 이내
+    };
+
+    /* ========================= 상태 ========================= */
+    /** @type {'idle'|'countdown'|'running'|'ended'} */
+    let phase = 'idle';
+    let startTime = 0;     // 퍼포먼스 타임스탬프(ms)
+    let endTime = null;    // 퍼포먼스 타임스탬프(ms)
+    let rafId = 0;         // requestAnimationFrame ID
+    let countdownRaf = 0;  // 카운트다운 rAF ID
+    let countdownStart = 0;// 퍼포먼스 타임스탬프(ms)
+    let fadeApplied = false; // 5초 시점에 페이드 클래스 적용 여부
+
+    /* ========================= DOM ========================= */
+    const $timerText = document.getElementById('timerText');
+    const $countdown = document.getElementById('countdown');
+    const $live = document.getElementById('live');
+    const $result = document.getElementById('result');
+    const $actionBtn = document.getElementById('actionBtn');
+    const $resetBtn = document.getElementById('resetBtn');
+    const $clock = document.getElementById('clock');
+
+    /* ========================= 유틸리티 ========================= */
+    const log = (...args) => { if (DEBUG) console.log('[DEBUG]', ...args); };
+
+    /** 밀리초 → 초(숫자) */
+    function msToSeconds(ms) { return ms / 1000; }
+
+    /** 소수 둘째 자리 반올림 (0.005 → 0.01 규칙) */
+    function roundTo2(n) { return Math.round(n * 100) / 100; }
+
+    /** 숫자(초) → s.hh 포맷 문자열(항상 두 자리 소수) */
+    function formatSeconds(seconds) {
+      const rounded = roundTo2(seconds);
+      return rounded.toFixed(2);
+    }
+
+    /** ARIA 라이브 리전에 메시지 게시 */
+    function announce(msg) {
+      $live.textContent = msg;
+      log('Announce:', msg);
+    }
+
+    /** 버튼 활성/비활성 토글(ARIA 동기화) */
+    function setActionEnabled(enabled) {
+      $actionBtn.disabled = !enabled;
+      $actionBtn.setAttribute('aria-disabled', String(!enabled));
+    }
+
+    /** 등급 메시지 */
+    function getGradeMessage(absError) {
+      if (absError <= GRADES.god) return '신의 손';
+      if (absError <= GRADES.great) return '대단해요';
+      if (absError <= GRADES.good) return '좋아요';
+      return '다시 도전!';
+    }
+
+    /* ========================= 게임 루프 ========================= */
+    /** 시계 애니메이션 토글: running에서만 작동 */
+    function setClockAnimating(on) {
+      if (!$clock) return;
+      if (on) {
+        // 회전 속도 고정(0.8s) + 시작 각도 무작위(딜레이를 음수로)
+        $clock.style.setProperty('--sec-rot', '0.8s');
+        const delay = `-${(Math.random() * 0.8).toFixed(3)}s`;
+        $clock.style.setProperty('--sec-delay', delay);
+      }
+      $clock.classList.toggle('animate', !!on);
+    }
+    // 3→2→1→시작! 이후 타이머 시작
+    function startCountdown() {
+      phase = 'countdown';
+      setClockAnimating(false); // 카운트다운 동안 시계 고정
+      fadeApplied = false;
+      $timerText.classList.remove('fade');
+      $timerText.textContent = '0.00';
+      $timerText.setAttribute('aria-label', '경과 시간 0.00초');
+      $result.style.display = 'none';
+      $result.textContent = '';
+
+      setActionEnabled(false);
+      $resetBtn.classList.add('hidden');
+
+      // 접근성: 카운트다운 알림
+      countdownStart = performance.now();
+      let started = false; // "시작!" 처리 중복 방지
+
+      function tick() {
+        const now = performance.now();
+        const elapsed = now - countdownStart; // ms
+        const remain = COUNTDOWN_SECONDS * 1000 - elapsed;
+
+        if (remain > 2000) {
+          $countdown.textContent = '3';
+        } else if (remain > 1000) {
+          $countdown.textContent = '2';
+        } else if (remain > 0) {
+          $countdown.textContent = '1';
+        } else {
+          if (!started) {
+            started = true;
+            $countdown.textContent = '시작!';
+            announce('시작! 지금 버튼을 누를 수 있습니다.');
+            startTimer(now); // 카운트다운 tick 시점의 now를 전달 → 정확한 0.00 기준 확보
+            // 잠시 후 "시작!" 텍스트 제거
+            setTimeout(() => { $countdown.textContent = ''; }, 650);
+          }
+        }
+        if (phase === 'countdown' && !started) {
+          countdownRaf = requestAnimationFrame(tick);
+        }
+      }
+      cancelAnimationFrame(countdownRaf);
+      tick();
+    }
+
+    // 스톱워치 시작: 성능 타임스탬프를 기준으로 논리 시간 산출
+    function startTimer(startRefNow) {
+      phase = 'running';
+      setClockAnimating(true); // 러닝 중에만 시계 똑딱
+      startTime = startRefNow ?? performance.now();
+      endTime = null;
+      setActionEnabled(true);
+      $actionBtn.focus({ preventScroll: true });
+
+      function update() {
+        const now = performance.now();
+        const elapsedSec = msToSeconds(now - startTime);
+
+        // 표시 업데이트(반올림된 문자열) — 논리 시간은 performance.now 기반
+        const display = formatSeconds(elapsedSec);
+        $timerText.textContent = display;
+        $timerText.setAttribute('aria-label', `경과 시간 ${display}초`);
+
+        // 5.00초에 페이드 클래스 적용 → 2초 전환으로 7.00초에 완전 투명
+        if (!fadeApplied && elapsedSec >= FADE_START_SEC) {
+          $timerText.classList.add('fade');
+          fadeApplied = true;
+        }
+
+        if (phase === 'running') {
+          rafId = requestAnimationFrame(update);
+        }
+      }
+      cancelAnimationFrame(rafId);
+      update();
+    }
+
+    // 첫 클릭만 처리하여 타이머 종료 & 결과 계산/표시
+    function stop() {
+      if (phase !== 'running') return; // 중복 클릭 방지
+      phase = 'ended';
+      setClockAnimating(false); // 종료 시 시계 고정
+      endTime = performance.now();
+      cancelAnimationFrame(rafId);
+
+      // 기록/오차 계산 (둘째 자리 반올림)
+      const seconds = msToSeconds(endTime - startTime);
+      const record = roundTo2(seconds);
+      const error = roundTo2(Math.abs(record - TARGET_SECONDS));
+      const grade = getGradeMessage(error);
+
+      const msg = `기록: ${record.toFixed(2)}초 / 오차: ${error.toFixed(2)}초 — ${grade}`;
+      $result.textContent = msg;
+      $result.style.display = 'block';
+      announce(msg);
+
+      setActionEnabled(false);
+      $resetBtn.classList.remove('hidden');
+      log('End', { record, error, grade });
+    }
+
+    // 전체 상태 초기화 후 카운트다운 재시작
+    function reset() {
+      cancelAnimationFrame(rafId);
+      cancelAnimationFrame(countdownRaf);
+      phase = 'idle';
+      startTime = 0; endTime = null; fadeApplied = false;
+
+      $timerText.textContent = '0.00';
+      $timerText.setAttribute('aria-label', '경과 시간 0.00초');
+      $timerText.classList.remove('fade');
+      $countdown.textContent = '';
+      $result.textContent = '';
+      $result.style.display = 'none';
+      setActionEnabled(false);
+      $resetBtn.classList.add('hidden');
+
+      announce('새 게임이 시작됩니다. 3초 카운트다운 후 시작!');
+      // 약간의 프레임 여유 후 카운트다운 시작(시각적 일관성)
+      setTimeout(startCountdown, 100);
+    }
+
+    /* ========================= 이벤트 바인딩 ========================= */
+    // 버튼 클릭
+    $actionBtn.addEventListener('click', () => {
+      if ($actionBtn.disabled) return; // 안전망
+      stop();
+    });
+
+    // 키보드: 스페이스/엔터로 트리거
+    window.addEventListener('keydown', (e) => {
+      const isSpace = e.code === 'Space' || e.key === ' ';
+      const isEnter = e.code === 'Enter' || e.key === 'Enter';
+      if (!(isSpace || isEnter)) return;
+
+      if (phase === 'running') {
+        e.preventDefault();
+        stop();
+      } else if (phase === 'countdown') {
+        // 카운트다운 중 입력은 무시 + 약한 피드백
+        e.preventDefault();
+        nudgeDisabledFeedback();
+      }
+    });
+
+    // 비활성 버튼 클릭 시 피드백(모바일 포함) — 캡처 단계에서 경로 검사
+    window.addEventListener('pointerdown', (e) => {
+      if (!$actionBtn.disabled) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.includes($actionBtn)) {
+        nudgeDisabledFeedback();
+      }
+    }, { capture: true });
+
+    function nudgeDisabledFeedback() {
+      $actionBtn.classList.remove('shake');
+      // 리플로우 후 다시 부여하여 애니메이션 재생
+      void $actionBtn.offsetWidth; 
+      $actionBtn.classList.add('shake');
+      if (navigator.vibrate) navigator.vibrate(30);
+    }
+
+    // 다시하기
+    $resetBtn.addEventListener('click', () => reset());
+
+    // 초기 진입 시 자동 카운트다운 시작
+    window.addEventListener('DOMContentLoaded', () => {
+      announce('게임이 곧 시작됩니다. 3초 카운트다운.');
+      startCountdown();
+    });
+  </script>
+</body>
+</html>
